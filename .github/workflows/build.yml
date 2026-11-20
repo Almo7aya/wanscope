@@ -205,7 +205,7 @@ jobs:
 
   luci:
     name: luci-app-wanscope and wanscope-data (${{ matrix.sdk }})
-    needs: check
+    needs: [ check, binaries ]
     if: needs.check.outputs.release == 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -218,6 +218,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      # both packages depend on wanscope, which the SDK builds first: it needs a daemon to package (x86_64,
+      # this SDK's target; only these two packages are kept)
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist
+
+      - name: The daemon for the SDK's own wanscope build
+        run: |
+          mkdir -p openwrt/wanscope/prebuilt
+          install -m 755 dist/amd64/wanscope openwrt/wanscope/prebuilt/wanscope
 
       # the data package's lists, from the latest sources: v2fly/domain-list-community (MIT) and DB-IP's
       # ASN Lite (CC BY 4.0; this month's, else last month's)
