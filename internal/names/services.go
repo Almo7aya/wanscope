@@ -42,6 +42,11 @@ var builtin = []string{
 	"Steam|games|steampowered.com steamcommunity.com steamcontent.com steamserver.net steamstatic.com steam-chat.com valvesoftware.com",
 	"Epic Games|games|epicgames.com epicgames.dev unrealengine.com fortnite.com",
 	"THE FINALS|games|embark.games embark-studios.com reachthefinals.com",
+	// anti-cheats talk to their own backends while a game runs (Denuvo's from its kernel driver, mostly upload)
+	"Denuvo Anti-Cheat|games|codefusion.technology",
+	"Easy Anti-Cheat|games|easyanticheat.net",
+	"BattlEye|games|battleye.com",
+	"FACEIT|games|faceit.com faceit-cdn.net",
 	"Riot Games|games|riotgames.com riotcdn.net leagueoflegends.com playvalorant.com",
 	"Battle.net|games|battle.net blizzard.com blzstatic.com",
 	"EA|games|ea.com origin.com eaassets-a.akamaihd.net",
@@ -124,13 +129,16 @@ type Rules struct {
 
 // CustomRule is a user's rule from the config.
 type CustomRule struct {
+	Section        string // its UCI section
 	Name, Category string
 	Domains        []string
 	CIDRs          []string
 	Ports          []string // "udp:7000-7999", "tcp:25565"
 }
 
-func NewRules(custom []CustomRule) *Rules {
+// NewRules builds the rules: your own first, then the built-in list, then extra ("Name|kind|domains" lines from
+// the data package): on a domain more than one names, the first wins.
+func NewRules(custom []CustomRule, extra []string) *Rules {
 	r := &Rules{suffix: map[string]*Service{}}
 	// custom rules first: they win over the built-in ones
 	for _, c := range custom {
@@ -159,12 +167,17 @@ func NewRules(custom []CustomRule) *Rules {
 			}
 		}
 	}
-	for _, line := range builtin {
-		f := strings.SplitN(line, "|", 3)
-		svc := &Service{Name: f[0], Category: f[1]}
-		for _, d := range strings.Fields(f[2]) {
-			if _, ok := r.suffix[d]; !ok {
-				r.suffix[d] = svc
+	for _, list := range [][]string{builtin, extra} {
+		for _, line := range list {
+			f := strings.SplitN(line, "|", 3)
+			if len(f) != 3 || f[0] == "" {
+				continue
+			}
+			svc := &Service{Name: f[0], Category: f[1]}
+			for _, d := range strings.Fields(f[2]) {
+				if _, ok := r.suffix[d]; !ok {
+					r.suffix[d] = svc
+				}
 			}
 		}
 	}
@@ -277,6 +290,10 @@ func PortName(proto uint8, port uint16) string {
 	}
 	return ""
 }
+
+// WebPort tells PortName's names for plain web traffic (HTTPS, HTTP, QUIC) from ports that say what a connection
+// is for (DNS, mail, SSH...).
+func WebPort(name string) bool { return name == "HTTPS" || name == "HTTP" || name == "QUIC" }
 
 // Categories maps every known service name to its category.
 func Categories(r *Rules) map[string]string {

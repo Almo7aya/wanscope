@@ -32,6 +32,12 @@ if (-not $UIOnly) {
 	if ($LASTEXITCODE -ne 0) { throw "build failed" }
 	Copy-Item "$root\openwrt\wanscope\files\wanscope.init" "$stage\wanscope.init"
 	Copy-Item "$root\openwrt\wanscope\files\wanscope.config" "$stage\wanscope.config"
+	# the data package's lists, when made here (go run ./cmd/wanscope-data ... openwrt/wanscope-data/data/...)
+	$data = "$root\openwrt\wanscope-data\data"
+	if ((Test-Path "$data\services.txt") -and (Test-Path "$data\owners.bin.gz")) {
+		New-Item -ItemType Directory -Force "$stage\data" | Out-Null
+		Copy-Item "$data\services.txt", "$data\owners.bin.gz" "$stage\data\"
+	}
 }
 if (-not $DaemonOnly) {
 	$luci = "$root\openwrt\luci-app-wanscope"
@@ -46,6 +52,9 @@ Get-ChildItem $stage -Include *.init, *.config -Recurse | ForEach-Object {
 $install = @'
 set -e
 cd /tmp/wanscope-stage
+if [ -d data ]; then
+	mkdir -p /usr/share/wanscope && cp data/services.txt data/owners.bin.gz /usr/share/wanscope/
+fi
 if [ -f wanscope ]; then
 	/etc/init.d/wanscope stop 2>/dev/null || true
 	install_bin() { cp "$1" "$2"; chmod 755 "$2"; }

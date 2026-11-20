@@ -50,6 +50,7 @@ type Policy struct {
 	err      string
 	drops    map[string]store.Counter
 	hits     map[string]bool // quota hits already reported (key|quota|period start)
+	sets     map[string]bool // the blocked services' sets in the table now (svcblock.go)
 }
 
 func newPolicy(e *Engine) *Policy {
@@ -91,13 +92,24 @@ func periodStart(loc *time.Location, period string, t int64) int64 {
 }
 
 func (p *Policy) tick(now int64) {
+	p.rules(now)
+	// blocked services' new addresses go in every tick
+	if len(p.sets) > 0 {
+		if err := p.e.blocks.flush(p.sets, now); err != nil {
+			p.e.log.Warn("nft: blocked service addresses", "err", err)
+		}
+	}
+}
+
+func (p *Policy) rules(now int64) {
 	if !p.dirty.Load() && now-p.lastEval < 5 {
 		return
 	}
 	p.dirty.Store(false)
 	p.lastEval = now
 	effects := p.evaluate(now)
-	script := p.script(effects, now)
+	sets, brules := p.blockRules(p.e.Config(), now)
+	script := p.script(effects, sets, brules, now)
 	p.mu.Lock()
 	p.effects = effects
 	changed := script != p.applied
@@ -122,6 +134,12 @@ func (p *Policy) tick(now int64) {
 	} else {
 		p.err = ""
 		p.applied = script
+		// a table made anew starts with empty sets
+		p.sets = map[string]bool{}
+		for _, s := range sets {
+			p.sets[s] = true
+		}
+		p.e.blocks.rebuilt(sets, now)
 	}
 	p.mu.Unlock()
 }
@@ -225,15 +243,15 @@ func (p *Policy) evaluate(now int64) map[string]Effect {
 	return out
 }
 
-// script renders the table; "" when nothing applies.
-func (p *Policy) script(effects map[string]Effect, now int64) string {
+// script renders the table (blocked services' sets and rules included); "" when nothing applies.
+func (p *Policy) script(effects map[string]Effect, sets, blockRules []string, now int64) string {
 	keys := make([]string, 0, len(effects))
 	for k, e := range effects {
 		if e.Active() {
 			keys = append(keys, k)
 		}
 	}
-	if len(keys) == 0 {
+	if len(keys) == 0 && len(blockRules) == 0 {
 		return ""
 	}
 	sort.Strings(keys)
@@ -285,11 +303,16 @@ func (p *Policy) script(effects map[string]Effect, now int64) string {
 			}
 		}
 	}
+	rules = append(rules, blockRules...)
 	if len(rules) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "table inet %s {\n\tchain forward_limits {\n\t\ttype filter hook forward priority filter - 5; policy accept;\n", nftTable)
+	fmt.Fprintf(&b, "table inet %s {\n", nftTable)
+	for _, s := range sets {
+		fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t}\n", s)
+	}
+	b.WriteString("\tchain forward_limits {\n\t\ttype filter hook forward priority filter - 5; policy accept;\n")
 	for _, r := range rules {
 		b.WriteString("\t\t" + r + "\n")
 	}
@@ -346,8 +369,8 @@ func (p *Policy) readDrops() {
 			continue
 		}
 		key, dir, ok := strings.Cut(n.Rule.Comment, "|")
-		if !ok {
-			continue
+		if !ok || key == "svc" {
+			continue // a blocked service's rule: not a device's drops
 		}
 		for _, x := range n.Rule.Expr {
 			var c struct {

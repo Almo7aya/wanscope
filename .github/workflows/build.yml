@@ -51,6 +51,8 @@ jobs:
           r=$(awk -F':=' '/^PKG_RELEASE:=/ {print $2}' openwrt/wanscope/Makefile | tr -d ' ')
           lv=$(awk -F':=' '/^PKG_VERSION:=/ {print $2}' openwrt/luci-app-wanscope/Makefile | tr -d ' ')
           if [ "$v" != "$lv" ]; then echo "wanscope $v and luci-app-wanscope $lv differ"; exit 1; fi
+          dv=$(awk -F':=' '/^PKG_VERSION:=/ {print $2}' openwrt/wanscope-data/Makefile | tr -d ' ')
+          if [ "$v" != "$dv" ]; then echo "wanscope $v and wanscope-data $dv differ"; exit 1; fi
           echo "version=$v-r$r" >> "$GITHUB_OUTPUT"
           release=false
           if [ "${{ github.event_name }}" != "pull_request" ]; then
@@ -202,7 +204,7 @@ jobs:
           path: upload/
 
   luci:
-    name: luci-app-wanscope (${{ matrix.sdk }})
+    name: luci-app-wanscope and wanscope-data (${{ matrix.sdk }})
     needs: check
     if: needs.check.outputs.release == 'true'
     runs-on: ubuntu-latest
@@ -213,18 +215,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # the data package's lists, from the latest sources: v2fly/domain-list-community (MIT) and DB-IP's
+      # ASN Lite (CC BY 4.0; this month's, else last month's)
+      - name: Make the data package's lists
+        run: |
+          git clone -q --depth 1 https://github.com/v2fly/domain-list-community /tmp/dlc
+          curl -fsSL -o /tmp/asn.csv.gz "https://download.db-ip.com/free/dbip-asn-lite-$(date -u +%Y-%m).csv.gz" ||
+            curl -fsSL -o /tmp/asn.csv.gz "https://download.db-ip.com/free/dbip-asn-lite-$(date -u -d '-1 month' +%Y-%m).csv.gz"
+          mkdir -p openwrt/wanscope-data/data
+          go run ./cmd/wanscope-data services /tmp/dlc/data openwrt/wanscope-data/data/services.txt
+          go run ./cmd/wanscope-data owners /tmp/asn.csv.gz openwrt/wanscope-data/data/owners.bin.gz
+
       - name: Build with the OpenWrt SDK
         uses: openwrt/gh-action-sdk@main
         env:
           ARCH: x86_64-openwrt-${{ matrix.sdk }}
-          PACKAGES: luci-app-wanscope
+          PACKAGES: luci-app-wanscope wanscope-data
           NO_SHFMT_CHECK: 1
           V: s
 
       - name: Collect
         run: |
           mkdir -p upload
-          find bin/packages -type f \( -name 'luci-app-wanscope*.ipk' -o -name 'luci-app-wanscope*.apk' \) -exec cp {} upload/ \;
+          find bin/packages -type f \( -name 'luci-app-wanscope*.ipk' -o -name 'luci-app-wanscope*.apk' -o -name 'wanscope-data*.ipk' -o -name 'wanscope-data*.apk' \) -exec cp {} upload/ \;
           ls -l upload
           [ -n "$(ls upload)" ]
 
@@ -259,6 +276,13 @@ jobs:
           ```
 
           Then open Network → wanscope.
+
+          Optional, about 3 MB: `wanscope-data` (the same for every router) names about 1,100 more services and who owns the addresses nothing else names. Its lists come from [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) (MIT) and [IP Geolocation by DB-IP](https://db-ip.com) (CC BY 4.0).
+
+          ```sh
+          opkg install ./wanscope-data_*_all.ipk          # OpenWrt 24.10
+          apk add --allow-untrusted ./wanscope-data-*.apk  # OpenWrt 25.12+
+          ```
           EOF
 
       - uses: softprops/action-gh-release@v2

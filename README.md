@@ -11,7 +11,12 @@ with the uplink it actually left through, even on one-armed routers and with mwa
 ## What it shows
 
 - **Overview**: download and upload right now, stacked by uplink, second by second; the share of each
-  uplink; the devices moving data now; what is left of each data plan; what used the internet today.
+  uplink; the devices moving data now and what each is using; what is left of each data plan; what used
+  the internet today.
+- **Activity**: what every device is doing right now, by service: speed, connections, servers, uplink and
+  protocol (QUIC, TCP, UDP), down to each connection (server name and the CNAME it went through, address
+  and ports, how it was named, who owns the address, the program or tunnel, speed and data). **Name it**
+  turns traffic nothing names into a service of your own.
 - **Devices**: every client with its live speed, today and this month, the uplinks it used and what it
   mostly did. Each device has its own page: live and historic charts by uplink, services, sites and
   addresses, open connections, and its controls. Names come from DHCP, static leases, NetBIOS and mDNS,
@@ -34,9 +39,19 @@ with the uplink it actually left through, even on one-armed routers and with mwa
 wanscope reads, on the LAN interface only, DNS answers and the server name in TLS and QUIC handshakes
 (QUIC Initial packets are encrypted with keys anyone can derive; Chrome's split and shuffled ClientHellos
 are put back together). A kernel filter passes only those packets to the daemon; bulk traffic never
-reaches it. Answers already in AdGuard Home's query log are read at start. About 60 services are known
-by name (YouTube, Netflix, Steam, WhatsApp, Windows Update...); you can add your own by domain, address
-range or port.
+reaches it. Answers already in AdGuard Home's query log are read at start.
+
+A connection's service comes from, first to last: your own rules (by domain, IPv4 address range or port;
+"Name it" on the Activity page adds them), the built-in list (about 65 services: YouTube, Netflix, Steam,
+WhatsApp, Windows Update, the anti-cheats...), the optional `wanscope-data` lists, its site's name, a port
+that says what it is (DNS, mail, SSH...), and last who owns the server's address ("Amazon.com network").
+
+The optional **wanscope-data** package (about 3 MB, the same for every router) brings two lists, made from
+the latest sources when a release is built:
+- about 1,100 more services by domain, from [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
+  (MIT), without the China-only lists;
+- who announces every IPv4 range, from DB-IP's ASN Lite ([IP Geolocation by DB-IP](https://db-ip.com), CC BY 4.0).
+  IPv4 only.
 
 ## Control
 
@@ -44,6 +59,13 @@ Per device: pause (15 min, 1 h, until morning, until resumed), block, speed limi
 23:00-07:00 no internet", "weekends 08:00-12:00 limit to 1 MB/s"), and data quotas per day, week or month
 that alert, slow down or cut off. New devices can get internet right away, a guest speed, or nothing until
 approved. Rules live in their own nftables table (`inet wanscope`), which exists only while a rule applies.
+
+Services can be blocked too, on one device or on every device (**Block** on the Activity page, or
+`ubus call wanscope block_service '{"service":"YouTube","device":"aa:bb:cc:dd:ee:ff","block":true}'`; no
+device means every device). It is IP blocking: an nftables set per blocked service holds the IPv4 addresses
+its connections use and the DNS answers that name it, and traffic to them is dropped; nothing is filtered in
+DNS. An address stays blocked until 6 hours after it was last seen. Big services share servers (CDNs), so
+whatever else uses the same addresses stops too.
 
 ## Alerts
 
@@ -73,6 +95,13 @@ Packages for every OpenWrt target are on the [releases page](../../releases): `.
 opkg install ./wanscope_*_<arch>.ipk ./luci-app-wanscope_*_all.ipk
 # OpenWrt 25.12 and newer
 apk add --allow-untrusted ./wanscope-*_<arch>.apk ./luci-app-wanscope-*.apk
+```
+
+Optionally add the data package (above):
+
+```sh
+opkg install ./wanscope-data_*_all.ipk           # OpenWrt 24.10
+apk add --allow-untrusted ./wanscope-data-*.apk   # OpenWrt 25.12 and newer
 ```
 
 Then open **Network → wanscope**. It needs `kmod-nf-conntrack-netlink` (pulled in by the package) and
@@ -114,6 +143,10 @@ config device 'd_aabbccddeeff'
 	option down '2000'           # limits in kB/s
 	list schedule 'weekdays 23:00-07:00 block'
 	list quota 'day total 2048 limit 500 500'
+	list block_service 'TikTok'  # its addresses, on this device
+
+config wanscope 'main'
+	list block_service 'Roblox'  # on every device
 ```
 
 ## ubus
@@ -126,6 +159,7 @@ ubus call wanscope devices
 ubus call wanscope plans
 ubus call wanscope flows '{"limit":20}'
 ubus call wanscope history '{"keys":["i:*"],"from":1700000000,"step":3600}'
+ubus call wanscope set_rule '{"name":"Denuvo Anti-Cheat","category":"games","domain":"codefusion.technology"}'
 ```
 
 ## Building
@@ -139,11 +173,23 @@ CI builds the daemon for every Go target and packages it with the OpenWrt SDK fo
 `PKG_VERSION`/`PKG_RELEASE` in `openwrt/wanscope/Makefile` change. `scripts/deploy.ps1` copies a
 development build to a router.
 
+The data package's lists are made with `cmd/wanscope-data` (CI does this for each release):
+
+```sh
+git clone --depth 1 https://github.com/v2fly/domain-list-community /tmp/dlc
+curl -fsSLo /tmp/asn.csv.gz "https://download.db-ip.com/free/dbip-asn-lite-$(date -u +%Y-%m).csv.gz"
+go run ./cmd/wanscope-data services /tmp/dlc/data openwrt/wanscope-data/data/services.txt
+go run ./cmd/wanscope-data owners /tmp/asn.csv.gz openwrt/wanscope-data/data/owners.bin.gz
+```
+
 ## Credits
 
 Ideas and the CI approach come from [bandix](https://github.com/timsaya/bandix),
 [luci-app-bandix](https://github.com/timsaya/luci-app-bandix) and
 [luci-app-bandix-plus](https://github.com/timsaya/luci-app-bandix-plus) by timsaya and smallprogram.
+
+The data package's lists come from [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
+(MIT) and [IP Geolocation by DB-IP](https://db-ip.com) (DB-IP's ASN Lite, CC BY 4.0).
 
 ## License
 

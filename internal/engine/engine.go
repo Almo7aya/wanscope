@@ -40,6 +40,8 @@ type FlowState struct {
 	Site      string
 	Proc      string
 	Tunnel    string // the tunnel this connection carries (WireGuard transport)
+	Org       string // who announces the server's address (the data package's owners table)
+	Ruled     bool   // a rule (yours, built-in or the data package's) named its service
 	topo      *Topology
 	First     int64
 	Last      int64
@@ -63,6 +65,7 @@ type Engine struct {
 	cfg   atomic.Pointer[Config]
 	topo  atomic.Pointer[Topology]
 	rules atomic.Pointer[names.Rules]
+	data  dataFiles // the optional data package (data.go)
 
 	mu          sync.RWMutex
 	flows       map[flows.Key]*FlowState
@@ -83,6 +86,7 @@ type Engine struct {
 
 	policy *Policy
 	alerts *Alerts
+	blocks *svcBlocks // blocked services' addresses (svcblock.go)
 	buys   *purchases
 }
 
@@ -107,10 +111,12 @@ func New(log *slog.Logger, cfg *Config) (*Engine, error) {
 		log: log, nl: nl, tracker: tr, names: names.NewCache(), procs: procs.NewResolver(), Store: st,
 		Devs: NewRegistry(cfg.DataDir), flows: map[flows.Key]*FlowState{}, rates: map[string]store.Counter{},
 		linkPrev: map[string]sys.LinkStats{}, started: time.Now().Unix(), buys: loadPurchases(cfg.DataDir),
+		blocks: newSvcBlocks(),
 	}
+	e.names.OnAnswer = e.blocks.dnsAnswer
 	e.guestSince(cfg)
 	e.cfg.Store(cfg)
-	e.rules.Store(names.NewRules(cfg.Rules))
+	e.rules.Store(names.NewRules(cfg.Rules, e.loadData()))
 	e.policy = newPolicy(e)
 	e.alerts = newAlerts(e)
 	e.bus = ubus.NewBus("", log, e.ubusObject())
@@ -127,7 +133,16 @@ func (e *Engine) Reload() error {
 	}
 	e.guestSince(cfg)
 	e.cfg.Store(cfg)
-	e.rules.Store(names.NewRules(cfg.Rules))
+	rules := names.NewRules(cfg.Rules, e.loadData())
+	e.rules.Store(rules)
+	// live connections take new rules at once (a service named on the Activity page shows as such right away)
+	e.mu.Lock()
+	for _, fs := range e.flows {
+		if !fs.LocalOnly {
+			e.label(fs, rules)
+		}
+	}
+	e.mu.Unlock()
 	e.refreshTopology()
 	e.policy.dirty.Store(true)
 	e.log.Info("config reloaded")
@@ -427,6 +442,7 @@ func (e *Engine) tick(now, secs int64) {
 			delete(e.flows, k)
 		}
 	}
+	e.learnBlocked(cfg, rules, now)
 	// rates per second: links from this tick, connections from the last read
 	rates := make(map[string]store.Counter, len(series))
 	for k, c := range e.rates {
@@ -549,18 +565,31 @@ func (e *Engine) name(fs *FlowState, rules *names.Rules) {
 		fs.Site = names.Site(n.Host)
 		fs.tries = 100
 	}
+	if fs.Org == "" {
+		fs.Org = e.data.owners.Load().Lookup(fs.Remote.Addr())
+	}
+	e.label(fs, rules)
+}
+
+// label names a connection's service from what is known: a rule, else its site, else a port with a meaning of
+// its own (DNS, mail...), else who owns the server's address, else a plain web port, else "Other".
+func (e *Engine) label(fs *FlowState, rules *names.Rules) {
 	svc := rules.Classify(fs.Host, fs.Alias, fs.Remote.Addr(), fs.Proto, fs.Remote.Port())
+	fs.Ruled = svc != nil
+	p := names.PortName(fs.Proto, fs.Remote.Port())
 	switch {
 	case svc != nil:
 		fs.Service, fs.Category = svc.Name, svc.Category
 	case fs.Site != "":
 		fs.Service, fs.Category = fs.Site, "web"
+	case p != "" && !names.WebPort(p):
+		fs.Service, fs.Category = p, "other"
+	case fs.Org != "":
+		fs.Service, fs.Category = fs.Org+" network", "other"
+	case p != "":
+		fs.Service, fs.Category = p, "other"
 	default:
-		if p := names.PortName(fs.Proto, fs.Remote.Port()); p != "" {
-			fs.Service, fs.Category = p, "other"
-		} else {
-			fs.Service, fs.Category = "Other", "other"
-		}
+		fs.Service, fs.Category = "Other", "other"
 	}
 	if fs.Tunnel != "" {
 		fs.Service, fs.Category = "Tunnel "+fs.Tunnel, "tunnel"

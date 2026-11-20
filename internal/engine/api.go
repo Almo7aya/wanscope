@@ -40,6 +40,9 @@ func (e *Engine) ubusObject() *ubus.Object {
 		{Name: "delete_plan", Args: []ubus.Arg{arg("id", s)}, Handler: soft(e.apiDeletePlan)},
 		{Name: "set_guest", Args: []ubus.Arg{arg("policy", s), arg("down", i), arg("up", i)}, Handler: soft(e.apiSetGuest)},
 		{Name: "forget", Args: []ubus.Arg{arg("key", s)}, Handler: soft(e.apiForget)},
+		{Name: "set_rule", Args: []ubus.Arg{arg("name", s), arg("category", s), arg("domain", s), arg("cidr", s), arg("port", s)}, Handler: soft(e.apiSetRule)},
+		{Name: "block_service", Args: []ubus.Arg{arg("service", s), arg("device", s), arg("block", b)}, Handler: soft(e.apiBlockService)},
+		{Name: "blocks", Handler: e.apiBlocks},
 		{Name: "reload", Handler: func(*ubus.Request) (any, error) { return map[string]any{"ok": true}, e.Reload() }},
 	}}
 }
@@ -169,7 +172,8 @@ func (e *Engine) apiStatus(*ubus.Request) (any, error) {
 		"live_seconds": cfg.LiveSeconds, "conntrack": nflows, "tracked": tracked, "tick_ms": float64(cost.Microseconds()) / 1000, "poll_ms": float64(pcost.Microseconds()) / 1000,
 		"devices": len(e.Devs.All()), "disk": disk, "warnings": warn, "policy_error": e.policy.Error(),
 		"sniff":  map[string]any{"on": cfg.Sniff, "devs": sdevs, "dns": st.DNS, "tls": st.TLS, "quic": st.QUIC, "packets": pk},
-		"ifaces": ifaces, "notify": cfg.Notify.Method, "guest": cfg.Guest.Policy,
+		"ifaces": ifaces, "notify": cfg.Notify.Method, "guest": cfg.Guest.Policy, "data": e.dataStatus(),
+		"block_services": append([]string{}, cfg.BlockServices...),
 	}, nil
 }
 
@@ -237,11 +241,37 @@ type devInfo struct {
 	Local     store.Counter            `json:"local"`
 	WANs      map[string]store.Counter `json:"wans"`
 	Top       []string                 `json:"top"`
+	Now       []nowService             `json:"now,omitempty"` // what it uses right now (the last 5 seconds), busiest first
 	Flows     int                      `json:"flows"`
 	Effect    Effect                   `json:"effect"`
 	Policy    *devPolicy               `json:"policy,omitempty"`
 	Drops     store.Counter            `json:"drops"`
 	Approved  bool                     `json:"approved"`
+}
+
+// nowService is a service a device used in the last few seconds, with its rate now (0: a pause between bursts).
+type nowService struct {
+	Name     string `json:"name"`
+	Category string `json:"category,omitempty"`
+	Down     uint64 `json:"down"`
+	Up       uint64 `json:"up"`
+	Conns    int    `json:"conns"`
+}
+
+// nowWindow is how recent a connection's traffic must be to count as "now".
+const nowWindow = 5
+
+// flowLabel names what a connection talks to: its service, else its site, its server name or its address.
+func flowLabel(f *FlowState) string {
+	switch {
+	case f.Service != "":
+		return f.Service
+	case f.Site != "":
+		return f.Site
+	case f.Host != "":
+		return f.Host
+	}
+	return f.Remote.Addr().String()
 }
 
 type devPolicy struct {
@@ -251,6 +281,7 @@ type devPolicy struct {
 	Up         int      `json:"up"`
 	Schedules  []string `json:"schedules"`
 	Quotas     []string `json:"quotas"`
+	Services   []string `json:"block_services"` // services blocked on this device (their addresses)
 }
 
 func (e *Engine) devInfos(keys map[string]bool) []*devInfo {
@@ -265,10 +296,28 @@ func (e *Engine) devInfos(keys map[string]bool) []*devInfo {
 	e.mu.RLock()
 	rates := e.rates
 	nflows := map[string]int{}
+	busy := map[string]map[string]*nowService{}
 	for _, f := range e.flows {
 		if !f.LocalOnly && now-f.Last < 60 {
 			nflows[f.Dev]++
 		}
+		if f.LocalOnly || f.Dev == "" || now-f.Last >= nowWindow {
+			continue
+		}
+		m := busy[f.Dev]
+		if m == nil {
+			m = map[string]*nowService{}
+			busy[f.Dev] = m
+		}
+		name := flowLabel(f)
+		s := m[name]
+		if s == nil {
+			s = &nowService{Name: name, Category: f.Category}
+			m[name] = s
+		}
+		s.Down += f.RateDown
+		s.Up += f.RateUp
+		s.Conns++
 	}
 	e.mu.RUnlock()
 
@@ -298,7 +347,8 @@ func (e *Engine) devInfos(keys map[string]bool) []*devInfo {
 			di.Custom = dc.Name
 			di.Icon = dc.Icon
 			di.Approved = di.Approved || dc.Approved
-			p := &devPolicy{Block: dc.Block, PauseUntil: dc.PauseUntil, Down: dc.Down, Up: dc.Up, Schedules: []string{}, Quotas: []string{}}
+			p := &devPolicy{Block: dc.Block, PauseUntil: dc.PauseUntil, Down: dc.Down, Up: dc.Up, Schedules: []string{}, Quotas: []string{},
+				Services: append([]string{}, dc.BlockServices...)}
 			for _, s := range dc.Schedules {
 				p.Schedules = append(p.Schedules, s.Raw)
 			}
@@ -314,6 +364,19 @@ func (e *Engine) devInfos(keys map[string]bool) []*devInfo {
 			}
 		}
 		di.Top = topServices(labels[d.Key], 3)
+		for _, s := range busy[d.Key] {
+			di.Now = append(di.Now, *s)
+		}
+		sort.Slice(di.Now, func(i, j int) bool {
+			a, b := di.Now[i], di.Now[j]
+			if a.Down+a.Up != b.Down+b.Up {
+				return a.Down+a.Up > b.Down+b.Up
+			}
+			return a.Conns > b.Conns || (a.Conns == b.Conns && a.Name < b.Name)
+		})
+		if len(di.Now) > 6 {
+			di.Now = di.Now[:6]
+		}
 		out = append(out, di)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -516,10 +579,15 @@ type flowRow struct {
 	Local    string `json:"local"`
 	Remote   string `json:"remote"`
 	Host     string `json:"host,omitempty"`
+	Alias    string `json:"alias,omitempty"` // the CNAME the host resolved through (often its CDN)
+	Site     string `json:"site,omitempty"`
 	Src      string `json:"src,omitempty"`
 	Service  string `json:"service,omitempty"`
 	Category string `json:"category,omitempty"`
 	Proc     string `json:"proc,omitempty"`
+	Tunnel   string `json:"tunnel,omitempty"` // the tunnel this connection carries
+	Org      string `json:"org,omitempty"`    // who announces the server's address
+	Rule     bool   `json:"rule,omitempty"`   // a rule named its service (else its site, port or owner did)
 	First    int64  `json:"first"`
 	Last     int64  `json:"last"`
 	Up       uint64 `json:"up"`
@@ -576,8 +644,9 @@ func (e *Engine) flowRows(dev, wan string, limit int) []flowRow {
 		}
 		out = append(out, flowRow{
 			ID: fmt.Sprintf("%d", f.Key.ID), Dev: f.Dev, DevName: n, WAN: f.WAN, Proto: protoName(f.Proto),
-			Local: f.Local.String(), Remote: f.Remote.String(), Host: f.Host, Src: f.NameSrc, Service: f.Service,
-			Category: f.Category, Proc: f.Proc, First: f.First, Last: f.Last, Up: f.Up, Down: f.Down,
+			Local: f.Local.String(), Remote: f.Remote.String(), Host: f.Host, Alias: f.Alias, Site: f.Site, Src: f.NameSrc,
+			Service: f.Service, Category: f.Category, Proc: f.Proc, Tunnel: f.Tunnel, Org: f.Org, Rule: f.Ruled,
+			First: f.First, Last: f.Last, Up: f.Up, Down: f.Down,
 			RateUp: f.RateUp, RateDown: f.RateDown, Local2: f.LocalOnly,
 		})
 	}

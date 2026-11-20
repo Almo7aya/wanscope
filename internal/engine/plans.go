@@ -44,8 +44,9 @@ type PlanStatus struct {
 	Adjust    int64         `json:"adjust"`
 	Used      uint64        `json:"used"` // measured plus the correction
 	Left      int64         `json:"left"`
-	Pace      float64       `json:"pace"`               // bytes a day lately
-	RunsOut   int64         `json:"runs_out,omitempty"` // estimate
+	Pace      float64       `json:"pace"`                // bytes a day lately
+	RunsOut   int64         `json:"runs_out,omitempty"`  // estimate
+	PaceFrom  int64         `json:"pace_from,omitempty"` // the pace is the average since then (up to 7 days)
 	Today     store.Counter `json:"today"`
 	DaysFrom  int64         `json:"days_from"`
 	Days      string        `json:"days"` // per-day use since the start (csv down,up)
@@ -125,6 +126,26 @@ func sumCounters(m map[string]store.Counter) store.Counter {
 	return c
 }
 
+// minPaceSpan is the least history a daily pace is worked out from. Less than a day leans on the hours it has (an
+// evening reads high): the pages say what span the pace covers (pace_from).
+const minPaceSpan = 3600
+
+// dataFrom is the start of the first hour in [from, now) the store has traffic for on keys (now when none): the
+// store may hold less than the span asked for (a new install).
+func (e *Engine) dataFrom(keys []string, from, now int64) int64 {
+	h := e.Store.History(keys, from, now+1, 3600)
+	first := now
+	for _, d := range h.Data {
+		for i, c := range d {
+			if c.Total() > 0 && i < len(h.Bins) {
+				first = min(first, max(h.Bins[i], from))
+				break
+			}
+		}
+	}
+	return first
+}
+
 // PlanStatus is what a plan used and has left.
 func (e *Engine) PlanStatus(p *PlanConf, now int64, withDays bool) PlanStatus {
 	start, end := e.planWindow(p, now)
@@ -142,13 +163,13 @@ func (e *Engine) PlanStatus(p *PlanConf, now int64, withDays bool) PlanStatus {
 	st.Used = uint64(used)
 	st.Left = int64(st.Size) - used
 	st.Today = sumCounters(e.Store.Totals(keys, e.Store.DayStart(now), now+1))
-	// pace: the last 7 days, or since the start when that is shorter
-	from := max(start, now-7*86400)
-	if span := now - from; span >= 3600 {
+	// pace: what these uplinks used a day over the last 7 days the store has, not just since the bundle was bought
+	// (the house uses data at its own rate: a bundle bought tonight would otherwise be judged on one evening)
+	if from := e.dataFrom(keys, now-7*86400, now); now-from >= minPaceSpan {
 		recent := sumCounters(e.Store.Totals(keys, from, now+1)).Total()
-		st.Pace = float64(recent) / float64(span) * 86400
+		st.Pace, st.PaceFrom = float64(recent)/float64(now-from)*86400, from
 		if st.Pace > 0 && st.Left > 0 {
-			st.RunsOut = now + int64(float64(st.Left)/st.Pace*86400)
+			st.RunsOut = now + int64(float64(st.Left)/st.Pace*86400) // even past an expiry: the date the data lasts to
 		}
 	}
 	if withDays {

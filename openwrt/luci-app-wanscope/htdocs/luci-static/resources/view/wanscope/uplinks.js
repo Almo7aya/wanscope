@@ -10,6 +10,11 @@
 function gb(b) { return +(b / 1e9).toFixed(b >= 1e10 ? 1 : 2); }
 function when(t) { return new Date(t * 1000).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
 function day(t) { return new Date(t * 1000).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }); }
+// a span of history, roughly: "4 hours", "3 days", "7 days"
+function span(s) {
+	if (s < 86400) { var h = Math.max(1, Math.round(s / 3600)); return h == 1 ? _('hour') : _('%d hours').format(h); }
+	var d = Math.min(7, Math.round(s / 86400)); return d == 1 ? _('day') : _('%d days').format(d);
+}
 
 return view.extend({
 	load: function() {
@@ -72,9 +77,10 @@ return view.extend({
 			var lp = ws.bytesParts(Math.max(0, left));
 			var since = p.type == 'monthly' ? _('this cycle, since %s; it renews %s').format(day(p.start), day(p.end))
 				: _('since you bought it on %s (%s ago)').format(when(p.start), ws.dur(now - p.start));
-			var pace = p.pace > 0 ? _('Lately %s a day.').format(ws.bytes(p.pace)) : '';
+			// the pace is the average over the history there is, up to 7 days (pace_from)
+			var over = p.pace_from ? span(now - p.pace_from) : '';
+			var pace = p.pace > 0 ? _('Lately %s a day (over the last %s).').format(ws.bytes(p.pace), over) : '';
 			var out = left <= 0 ? _('All used.') : p.runs_out ? _('At that pace it runs out around %s.').format(when(p.runs_out)) : '';
-			if (p.type == 'monthly' && p.runs_out && p.runs_out > p.end) out = _('At that pace it lasts until the renewal.');
 			var expires = p.type == 'prepaid' && p.end ? _('The bundle expires %s.').format(when(p.end)) : '';
 			var days = ws.unpack(p.days), bins = [];
 			for (var i = 0; i < days.down.length; i++) bins.push(p.days_from + i * 86400);
@@ -95,8 +101,10 @@ return view.extend({
 				E('div', { 'class': 'ws-meter', 'style': 'height:14px;border-radius:7px', 'role': 'meter', 'aria-valuenow': Math.round(pct * 100), 'aria-valuemin': 0, 'aria-valuemax': 100 }, [
 					E('span', { 'style': 'border-radius:7px;width:' + Math.min(100, pct * 100).toFixed(2) + '%;background:' + color }) ]),
 				E('div', { 'class': 'ws-tiles', 'style': 'margin-top:12px' }, [
+					ws.tile(_('Runs out'), left <= 0 ? _('All used') : p.runs_out ? '~' + day(p.runs_out) : '—', '',
+						left <= 0 ? '' : p.runs_out ? _('at the pace of the last %s').format(over) : _('after an hour of history')),
 					ws.tile(_('Today on these uplinks'), ws.bytesParts(tot(p.today))[0], ws.bytesParts(tot(p.today))[1], '↓ ' + ws.bytes(p.today.down) + '  ↑ ' + ws.bytes(p.today.up)),
-					ws.tile(_('Per day lately'), ws.bytesParts(p.pace)[0], ws.bytesParts(p.pace)[1], _('average of the last 7 days')),
+					ws.tile(_('Per day lately'), ws.bytesParts(p.pace)[0], ws.bytesParts(p.pace)[1], over ? _('average of the last %s').format(over) : ''),
 					ws.tile(_('Used'), Math.round(pct * 100) + '', '%', ws.bytes(used) + ' / ' + ws.bytes(p.size))
 				]),
 				bins.length > 1 ? E('div', { 'class': 'ws-plot-label' }, [ _('Each day of this bundle') ]) : '',

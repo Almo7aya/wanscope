@@ -45,6 +45,10 @@ type Cache struct {
 	last  int64
 
 	nDNS, nTLS, nQUIC atomic.Uint64
+
+	// OnAnswer, when set, hears every DNS answer a client got (the engine learns blocked services' addresses
+	// from them). It runs on the sniffer's goroutine: it must not block.
+	OnAnswer func(client, ip netip.Addr, name, cname string)
 }
 
 func NewCache() *Cache {
@@ -80,6 +84,11 @@ func (c *Cache) Handle(p *Packet) {
 			c.any[a.IP.Unmap()] = e
 		}
 		c.mu.Unlock()
+		if f := c.OnAnswer; f != nil {
+			for _, a := range ans {
+				f(client.Unmap(), a.IP.Unmap(), a.Name, a.CNAME)
+			}
+		}
 	case p.Proto == 6 && p.Dst.Port() == 443:
 		name, ech := TLSRecordHello(p.Payload)
 		if name == "" {

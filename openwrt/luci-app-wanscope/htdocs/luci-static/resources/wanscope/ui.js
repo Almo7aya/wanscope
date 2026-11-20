@@ -30,6 +30,9 @@ var callCalibrate = rpc.declare({ object: 'wanscope', method: 'calibrate', param
 var callDeletePlan = rpc.declare({ object: 'wanscope', method: 'delete_plan', params: [ 'id' ] });
 var callSetGuest = rpc.declare({ object: 'wanscope', method: 'set_guest', params: [ 'policy', 'down', 'up' ] });
 var callForget = rpc.declare({ object: 'wanscope', method: 'forget', params: [ 'key' ] });
+var callBlocks = rpc.declare({ object: 'wanscope', method: 'blocks' });
+var callBlockService = rpc.declare({ object: 'wanscope', method: 'block_service', params: [ 'service', 'device', 'block' ] });
+var callSetRule = rpc.declare({ object: 'wanscope', method: 'set_rule', params: [ 'name', 'category', 'domain', 'cidr', 'port' ] });
 
 var SVGNS = 'http://www.w3.org/2000/svg';
 
@@ -275,6 +278,12 @@ return baseclass.extend({
 	deletePlan: function(id) { return callDeletePlan(id).then(ok); },
 	setGuest: function(policy, down, up) { return callSetGuest(policy, down || 0, up || 0); },
 	forget: function(key) { return callForget(key); },
+	// every service block, with its addresses and drops (the Blocked page)
+	blocks: function() { return L.resolveDefault(callBlocks(), { blocks: [] }); },
+	// blocks a service's addresses on one device (device '' = every device), or lifts that block
+	blockService: function(service, device, block) { return callBlockService(service, device || '', !!block).then(ok); },
+	// names a service: o = { name, category, and one of domain, cidr, port }
+	setRule: function(o) { return callSetRule(o.name, o.category || 'other', o.domain || '', o.cidr || '', o.port || '').then(ok); },
 
 	css: function() {
 		if (!document.getElementById('ws-css'))

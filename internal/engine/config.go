@@ -32,7 +32,20 @@ type Config struct {
 	Guest   GuestConf
 	Notify  NotifyConf
 	Rules   []names.CustomRule
+
+	// BlockServices are blocked on every device; a device's own are in its DeviceConf (svcblock.go)
+	BlockServices []string
+	blockAll      map[string]bool
+	blockDev      map[string]map[string]bool
 }
+
+// ServiceBlocked tells whether svc is blocked on device dev (on it alone, or on every device).
+func (c *Config) ServiceBlocked(dev, svc string) bool {
+	return c.blockAll[svc] || c.blockDev[dev][svc]
+}
+
+// AnyServiceBlocked tells whether a service is blocked anywhere.
+func (c *Config) AnyServiceBlocked() bool { return len(c.blockAll) > 0 || len(c.blockDev) > 0 }
 
 type WANConf struct {
 	Name   string
@@ -66,6 +79,8 @@ type DeviceConf struct {
 	Schedules  []Schedule
 	Quotas     []Quota
 	Approved   bool
+	// BlockServices are services whose addresses this device can't reach (svcblock.go)
+	BlockServices []string
 }
 
 // Schedule applies an action on some days between two times of day
@@ -148,6 +163,7 @@ func LoadConfig() (*Config, error) {
 		c.SniffDevs = m.List("sniff_device")
 		c.LAN = m.List("lan")
 		c.OfflineSecs = int64(max(30, atoi(m.Get("offline_timeout", "180"), 180)))
+		c.BlockServices = m.List("block_service")
 	}
 	for _, s := range f.ByType("wan") {
 		name := s.Get("interface", s.Name)
@@ -180,6 +196,7 @@ func LoadConfig() (*Config, error) {
 			Section: s.Name, Key: key, Name: s.Get("name", ""), Icon: s.Get("icon", ""),
 			Block: s.Bool("block", false), PauseUntil: int64(atoi(s.Get("pause_until", "0"), 0)),
 			Down: atoi(s.Get("down", "0"), 0), Up: atoi(s.Get("up", "0"), 0), Approved: s.Bool("approved", true),
+			BlockServices: s.List("block_service"),
 		}
 		for _, r := range s.List("schedule") {
 			if sc, err := ParseSchedule(r); err == nil {
@@ -218,10 +235,22 @@ func LoadConfig() (*Config, error) {
 		c.Notify.BurstMinutes = max(1, atoi(n.Get("burst_minutes", "10"), 10))
 	}
 	for _, s := range f.ByType("rule") {
-		r := names.CustomRule{Name: s.Get("name", ""), Category: s.Get("category", "other"),
+		r := names.CustomRule{Section: s.Name, Name: s.Get("name", ""), Category: s.Get("category", "other"),
 			Domains: s.List("domain"), CIDRs: s.List("cidr"), Ports: s.List("port")}
 		if r.Name != "" {
 			c.Rules = append(c.Rules, r)
+		}
+	}
+	c.blockAll, c.blockDev = map[string]bool{}, map[string]map[string]bool{}
+	for _, s := range c.BlockServices {
+		c.blockAll[s] = true
+	}
+	for k, d := range c.Devices {
+		for _, s := range d.BlockServices {
+			if c.blockDev[k] == nil {
+				c.blockDev[k] = map[string]bool{}
+			}
+			c.blockDev[k][s] = true
 		}
 	}
 	return c, nil

@@ -2,3 +2,4 @@
 /dist/
 /bin/
 *.exe
+/openwrt/wanscope-data/data/

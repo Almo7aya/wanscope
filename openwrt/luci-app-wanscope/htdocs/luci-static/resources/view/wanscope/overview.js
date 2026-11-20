@@ -71,7 +71,8 @@ return view.extend({
 			E('div', { 'class': 'ws-plot-label' }, [ E('span', {}, [ _('Upload by uplink') ]) ]), plotUp
 		]));
 		root.appendChild(E('div', { 'class': 'ws-cols' }, [
-			E('div', { 'class': 'ws-card' }, [ E('h3', {}, [ _('Devices now'), E('small', {}, [ _('last 5 seconds') ]) ]), devBox ]),
+			E('div', { 'class': 'ws-card' }, [ E('h3', {}, [ _('Devices now'), E('small', {}, [ _('last 5 seconds') ]), E('span', { 'class': 'grow' }),
+				E('a', { 'href': L.url('admin/network/wanscope/activity') }, [ _('All activity') ]) ]), devBox ]),
 			E('div', { 'class': 'ws-card' }, [ E('h3', {}, [ _('Data left and uplinks today'), E('span', { 'class': 'grow' }),
 				E('a', { 'href': L.url('admin/network/wanscope/uplinks') }, [ _('All uplinks') ]) ]), wanBox ])
 		]));
@@ -142,7 +143,10 @@ return view.extend({
 			}).filter(function(r) { return r.d + r.p > 0; }).sort(function(a, b) { return b.d + b.p - (a.d + a.p); }).slice(0, 10);
 			devBox.replaceChildren(ws.rows(rows.map(function(r) {
 				var d = devs.filter(function(x) { return x.key == r.key; })[0] || { key: r.key, name: devName(r.key) };
-				return { label: d.name, icon: ws.icon(d), sub: (d.top || [])[0] || '', down: r.d, up: r.p, color: ws.devColor(r.key),
+				// what it uses right now (the server's last 5 seconds), busiest first
+				var now = (d.now || []).map(function(s) { return s.name; });
+				var sub = now.slice(0, 3).join(' · ') + (now.length > 3 ? ' +' + (now.length - 3) : '');
+				return { label: d.name, icon: ws.icon(d), sub: sub, down: r.d, up: r.p, color: ws.devColor(r.key),
 					value: ws.rate(r.d + r.p), vsub: '↑ ' + ws.rate(r.p), click: function() { location.href = devURL(r.key); }, chips: ws.chips(d) };
 			}), { rate: true, empty: _('Nothing is moving right now.') }));
 		};
@@ -153,7 +157,7 @@ return view.extend({
 				var pct = p.size ? p.used / p.size : 0, color = pct >= 1 ? 'var(--ws-bad)' : pct >= 0.8 ? 'var(--ws-warn)' : 'var(--ws-good)';
 				return E('div', { 'class': 'ws-row click', 'click': function() { location.href = L.url('admin/network/wanscope/uplinks'); } }, [
 					E('div', { 'class': 'n' }, [ E('span', { 'class': 't', 'style': 'font-weight:600' }, [ p.name ]), E('small', {}, [ (p.ifaces || []).join(', ') ]) ]),
-					E('div', { 'class': 'v' }, [ E('b', {}, [ ws.bytes(Math.max(0, p.left)) ]), ' ', _('left'), E('small', {}, [ p.runs_out && p.left > 0 ? _('until ~%s').format(ws.dayLabel(p.runs_out)) : p.left <= 0 ? _('used up') : '' ]) ]),
+					E('div', { 'class': 'v' }, [ E('b', {}, [ ws.bytes(Math.max(0, p.left)) ]), ' ', _('left'), E('small', {}, [ p.left <= 0 ? _('used up') : p.runs_out ? _('runs out ~%s').format(ws.dayLabel(p.runs_out)) : '' ]) ]),
 					E('div', { 'style': 'grid-column:1/3' }, [ E('div', { 'class': 'ws-meter', 'style': 'margin:2px 0' }, [ E('span', { 'style': 'width:' + Math.min(100, pct * 100).toFixed(1) + '%;background:' + color }) ]) ])
 				]);
 			});
