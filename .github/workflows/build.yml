@@ -1,0 +1,270 @@
+# Checks every push; when openwrt/wanscope/Makefile carries a version that has
+# no release yet (or on a manual run), builds the packages for every target
+# with the OpenWrt SDK and publishes a release, as luci-app-bandix does.
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Go formatting, vet and tests
+        run: |
+          unformatted=$(gofmt -l ./internal ./cmd)
+          if [ -n "$unformatted" ]; then echo "run gofmt on: $unformatted"; exit 1; fi
+          GOOS=linux go vet ./...
+          go test ./...
+
+      - name: LuCI views parse
+        run: |
+          for f in $(find openwrt/luci-app-wanscope -name '*.js'); do
+            node -e "new Function(require('fs').readFileSync(process.argv[1], 'utf8'))" "$f" || { echo "syntax error in $f"; exit 1; }
+          done
+          for f in $(find openwrt/luci-app-wanscope -name '*.json'); do
+            node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" "$f" || { echo "bad JSON in $f"; exit 1; }
+          done
+
+      - name: Version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(awk -F':=' '/^PKG_VERSION:=/ {print $2}' openwrt/wanscope/Makefile | tr -d ' ')
+          r=$(awk -F':=' '/^PKG_RELEASE:=/ {print $2}' openwrt/wanscope/Makefile | tr -d ' ')
+          lv=$(awk -F':=' '/^PKG_VERSION:=/ {print $2}' openwrt/luci-app-wanscope/Makefile | tr -d ' ')
+          if [ "$v" != "$lv" ]; then echo "wanscope $v and luci-app-wanscope $lv differ"; exit 1; fi
+          echo "version=$v-r$r" >> "$GITHUB_OUTPUT"
+          release=false
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] || ! gh release view "v$v-r$r" >/dev/null 2>&1; then
+              release=true
+            fi
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "version $v-r$r, release: $release"
+
+  binaries:
+    name: Go binaries
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # one static binary per Go target; the packages below map OpenWrt's
+      # architectures onto these (no FPU: soft float)
+      - name: Cross-compile
+        run: |
+          v=${{ needs.check.outputs.version }}
+          build() {
+            name=$1; shift
+            env CGO_ENABLED=0 GOOS=linux "$@" go build -trimpath -ldflags "-s -w -X main.version=$v" -o "dist/$name/wanscope" ./cmd/wanscope
+            tar -C "dist/$name" -czf "dist/wanscope-$v-linux-$name.tar.gz" wanscope
+          }
+          build amd64 GOARCH=amd64
+          build 386 GOARCH=386 GO386=sse2
+          build 386-softfloat GOARCH=386 GO386=softfloat
+          build arm64 GOARCH=arm64
+          build armv5 GOARCH=arm GOARM=5
+          build armv6 GOARCH=arm GOARM=6
+          build armv7 GOARCH=arm GOARM=7
+          build mips GOARCH=mips GOMIPS=softfloat
+          build mipsle GOARCH=mipsle GOMIPS=softfloat
+          build mips64 GOARCH=mips64 GOMIPS64=softfloat
+          build riscv64 GOARCH=riscv64
+          build loong64 GOARCH=loong64
+          ls -l dist dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+
+  packages:
+    name: wanscope ${{ matrix.arch }} (${{ matrix.sdk }})
+    needs: [ check, binaries ]
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [ '24.10', '25.12' ]
+        arch:
+          - x86_64
+          - i386_pentium4
+          - i386_pentium-mmx
+          - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - aarch64_cortex-a76
+          - aarch64_generic
+          - arm_arm1176jzf-s_vfp
+          - arm_arm926ej-s
+          - arm_cortex-a15_neon-vfpv4
+          - arm_cortex-a5_vfpv4
+          - arm_cortex-a7
+          - arm_cortex-a7_neon-vfpv4
+          - arm_cortex-a7_vfpv4
+          - arm_cortex-a8_vfpv3
+          - arm_cortex-a9
+          - arm_cortex-a9_neon
+          - arm_cortex-a9_vfpv3-d16
+          - arm_fa526
+          - arm_xscale
+          - mips_24kc
+          - mips_4kec
+          - mips_mips32
+          - mips64_octeonplus
+          - mipsel_24kc
+          - mipsel_24kc_24kf
+          - mipsel_74kc
+          - mipsel_mips32
+          - riscv64_riscv64
+          - riscv64_generic
+          - loongarch64-generic
+        exclude:
+          # no SDK image for these
+          - { sdk: '25.12', arch: mips_4kec }
+          - { sdk: '25.12', arch: riscv64_riscv64 }
+          - { sdk: '24.10', arch: riscv64_generic }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist
+
+      - name: Pick the binary for ${{ matrix.arch }}
+        run: |
+          case "${{ matrix.arch }}" in
+            x86_64) go=amd64 ;;
+            i386_pentium4) go=386 ;;
+            i386_*) go=386-softfloat ;;
+            aarch64_*) go=arm64 ;;
+            arm_arm1176jzf-s_vfp) go=armv6 ;;
+            arm_*_neon*|arm_*_vfp*) go=armv7 ;;
+            arm_*) go=armv5 ;;
+            mips64_*) go=mips64 ;;
+            mipsel_*) go=mipsle ;;
+            mips_*) go=mips ;;
+            riscv64_*) go=riscv64 ;;
+            loongarch64*) go=loong64 ;;
+            *) echo "no Go target for ${{ matrix.arch }}"; exit 1 ;;
+          esac
+          mkdir -p openwrt/wanscope/prebuilt
+          install -m 755 "dist/$go/wanscope" openwrt/wanscope/prebuilt/wanscope
+          echo "using $go"
+
+      - name: Build with the OpenWrt SDK
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: ${{ matrix.arch }}-openwrt-${{ matrix.sdk }}
+          PACKAGES: wanscope
+          NO_SHFMT_CHECK: 1
+          V: s
+
+      - name: Collect
+        run: |
+          mkdir -p upload
+          for f in $(find bin/packages -type f \( -name 'wanscope*.ipk' -o -name 'wanscope*.apk' \)); do
+            base=$(basename "$f"); ext=${base##*.}; name=${base%.*}
+            # apk names carry no architecture: add it
+            case "$name" in *"${{ matrix.arch }}"*) ;; *) name="${name}_${{ matrix.arch }}" ;; esac
+            cp "$f" "upload/$name.$ext"
+          done
+          ls -l upload
+          [ -n "$(ls upload)" ]
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.sdk }}-${{ matrix.arch }}
+          path: upload/
+
+  luci:
+    name: luci-app-wanscope (${{ matrix.sdk }})
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [ '24.10', '25.12' ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with the OpenWrt SDK
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: x86_64-openwrt-${{ matrix.sdk }}
+          PACKAGES: luci-app-wanscope
+          NO_SHFMT_CHECK: 1
+          V: s
+
+      - name: Collect
+        run: |
+          mkdir -p upload
+          find bin/packages -type f \( -name 'luci-app-wanscope*.ipk' -o -name 'luci-app-wanscope*.apk' \) -exec cp {} upload/ \;
+          ls -l upload
+          [ -n "$(ls upload)" ]
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luci-${{ matrix.sdk }}
+          path: upload/
+
+  release:
+    name: Release
+    needs: [ check, binaries, packages, luci ]
+    if: always() && needs.check.outputs.release == 'true' && needs.luci.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Gather files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.ipk' -o -name '*.apk' -o -name '*.tar.gz' \) -exec cp {} release/ \;
+          ls -l release
+          cat > notes.md <<'EOF'
+          Packages for OpenWrt 24.10 (`.ipk`) and 25.12 or newer (`.apk`), plus the bare daemon for each CPU.
+
+          Find your architecture with `grep DISTRIB_ARCH /etc/openwrt_release`, then install `wanscope` for it and `luci-app-wanscope` (the same for every router):
+
+          ```sh
+          opkg install ./wanscope_*_<arch>.ipk ./luci-app-wanscope_*_all.ipk     # OpenWrt 24.10
+          apk add --allow-untrusted ./wanscope-*_<arch>.apk ./luci-app-wanscope-*.apk   # OpenWrt 25.12+
+          ```
+
+          Then open Network → wanscope.
+          EOF
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check.outputs.version }}
+          name: wanscope ${{ needs.check.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          body_path: notes.md
+          files: release/*

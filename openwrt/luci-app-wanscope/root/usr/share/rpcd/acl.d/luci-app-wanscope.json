@@ -1,0 +1,17 @@
+{
+	"luci-app-wanscope": {
+		"description": "Grant access to wanscope",
+		"read": {
+			"ubus": {
+				"wanscope": [ "status", "live", "devices", "device", "wans", "flows", "history", "top", "usage", "alerts", "report", "plans" ]
+			},
+			"uci": [ "wanscope" ]
+		},
+		"write": {
+			"ubus": {
+				"wanscope": [ "set_device", "set_wan", "set_guest", "forget", "reload", "notify_test", "set_plan", "topup", "calibrate", "delete_plan" ]
+			},
+			"uci": [ "wanscope" ]
+		}
+	}
+}

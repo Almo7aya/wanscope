@@ -1,0 +1,4 @@
+/scripts/deploy.local.ps1
+/dist/
+/bin/
+*.exe

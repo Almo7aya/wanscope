@@ -1,0 +1,49 @@
+{
+	"admin/network/wanscope": {
+		"title": "wanscope",
+		"order": 85,
+		"action": {
+			"type": "alias",
+			"path": "admin/network/wanscope/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-wanscope" ],
+			"uci": { "wanscope": true }
+		}
+	},
+	"admin/network/wanscope/overview": {
+		"title": "Overview",
+		"order": 10,
+		"action": { "type": "view", "path": "wanscope/overview" }
+	},
+	"admin/network/wanscope/devices": {
+		"title": "Devices",
+		"order": 20,
+		"action": { "type": "view", "path": "wanscope/devices" }
+	},
+	"admin/network/wanscope/uplinks": {
+		"title": "Uplinks",
+		"order": 30,
+		"action": { "type": "view", "path": "wanscope/uplinks" }
+	},
+	"admin/network/wanscope/connections": {
+		"title": "Connections",
+		"order": 40,
+		"action": { "type": "view", "path": "wanscope/connections" }
+	},
+	"admin/network/wanscope/history": {
+		"title": "History",
+		"order": 50,
+		"action": { "type": "view", "path": "wanscope/history" }
+	},
+	"admin/network/wanscope/alerts": {
+		"title": "Alerts",
+		"order": 60,
+		"action": { "type": "view", "path": "wanscope/alerts" }
+	},
+	"admin/network/wanscope/settings": {
+		"title": "Settings",
+		"order": 70,
+		"action": { "type": "view", "path": "wanscope/settings" }
+	}
+}
