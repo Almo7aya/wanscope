@@ -2,7 +2,9 @@ package engine
 
 import (
 	"cmp"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +24,8 @@ import (
 
 // Updates: once a day wanscope asks GitHub for the latest release, and on
 // request (or at night, when update_auto is on) installs it with opkg or apk.
-// The install runs as a script outside wanscope, since it restarts wanscope.
+// wanscope downloads the packages itself (Go's TLS works where uclient-fetch may not) and checks them
+// against GitHub's SHA-256; the install runs as a script outside wanscope, since it restarts wanscope.
 
 const (
 	defaultRepo  = "Almo7aya/wanscope"
@@ -30,6 +33,7 @@ const (
 	updateRetry  = 3600 // after a failed check
 	updateJob    = "/tmp/wanscope-update.json"
 	updateScript = "/tmp/wanscope-update.sh"
+	updateDir    = "/tmp/wanscope-update.d" // the downloads
 )
 
 //go:embed wanscope-update.sh
@@ -39,9 +43,10 @@ var updateSh []byte
 var updatePkgs = []string{"wanscope", "wanscope-data", "luci-app-wanscope"}
 
 type relAsset struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
-	Size int64  `json:"size"`
+	Name   string `json:"name"`
+	URL    string `json:"url"`
+	Size   int64  `json:"size"`
+	Digest string `json:"digest,omitempty"` // sha256:<hex>
 }
 
 type release struct {
@@ -257,9 +262,10 @@ func latestRelease(repo string) (*release, error) {
 		Page      string `json:"html_url"`
 		Published string `json:"published_at"`
 		Assets    []struct {
-			Name string `json:"name"`
-			URL  string `json:"browser_download_url"`
-			Size int64  `json:"size"`
+			Name   string `json:"name"`
+			URL    string `json:"browser_download_url"`
+			Size   int64  `json:"size"`
+			Digest string `json:"digest"`
 		} `json:"assets"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&gh); err != nil {
@@ -280,7 +286,7 @@ func latestRelease(repo string) (*release, error) {
 	}
 	for _, a := range gh.Assets {
 		if want[a.Name] && strings.HasPrefix(a.URL, "https://") {
-			r.Assets = append(r.Assets, relAsset{Name: a.Name, URL: a.URL, Size: a.Size})
+			r.Assets = append(r.Assets, relAsset{Name: a.Name, URL: a.URL, Size: a.Size, Digest: a.Digest})
 		}
 	}
 	return r, nil
@@ -288,7 +294,7 @@ func latestRelease(repo string) (*release, error) {
 
 // plan lists what an update would install: the packages that are here, with
 // the release's file for each. newer tells whether any of them is older.
-func (u *updater) plan(r *release) (rows []map[string]any, urls []string, newer bool, err error) {
+func (u *updater) plan(r *release) (rows []map[string]any, files []relAsset, newer bool, err error) {
 	arch, format := osArch(), pkgFormat()
 	for _, p := range updatePkgs {
 		ver, how := installedVersion(p)
@@ -313,9 +319,9 @@ func (u *updater) plan(r *release) (rows []map[string]any, urls []string, newer 
 			row["update"] = true
 			newer = true
 		}
-		urls = append(urls, a.URL)
+		files = append(files, *a)
 	}
-	return rows, urls, newer, err
+	return rows, files, newer, err
 }
 
 // announce raises an alert the first time a release is newer than this daemon.
@@ -410,27 +416,86 @@ func (u *updater) start() error {
 	if r == nil {
 		return errors.New("check for updates first")
 	}
-	_, urls, newer, err := u.plan(r)
+	_, assets, newer, err := u.plan(r)
 	if err != nil {
 		return err
 	}
 	if !newer {
 		return errors.New("wanscope is up to date")
 	}
-	if err := os.WriteFile(updateScript, updateSh, 0o755); err != nil {
-		return err
-	}
 	if err := writeJob("running", "start", "Starting the update", r.Version); err != nil {
 		return err
 	}
-	cmd := exec.Command("/bin/sh", append([]string{updateScript, updateJob, r.Version}, urls...)...)
+	u.e.log.Info("update started", "version", r.Version, "packages", len(assets))
+	go func() {
+		if err := install(r.Version, assets); err != nil {
+			writeJob("failed", "download", err.Error(), r.Version)
+			os.RemoveAll(updateDir)
+			u.e.log.Warn("update", "err", err)
+		}
+	}()
+	return nil
+}
+
+// install downloads the packages, then hands them to the script.
+func install(ver string, assets []relAsset) error {
+	os.RemoveAll(updateDir)
+	if err := os.MkdirAll(updateDir, 0o755); err != nil {
+		return err
+	}
+	var files []string
+	for i, a := range assets {
+		writeJob("running", "download", fmt.Sprintf("Downloading %s (%d of %d, %s)", a.Name, i+1, len(assets), HumanBytes(uint64(a.Size))), ver)
+		p := filepath.Join(updateDir, a.Name)
+		if err := download(a, p); err != nil {
+			return fmt.Errorf("%s: %w", a.Name, err)
+		}
+		files = append(files, p)
+	}
+	if err := os.WriteFile(updateScript, updateSh, 0o755); err != nil {
+		return err
+	}
+	cmd := exec.Command("/bin/sh", append([]string{updateScript, updateJob, ver}, files...)...)
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
-		writeJob("failed", "start", err.Error(), r.Version)
 		return err
 	}
 	go cmd.Wait()
-	u.e.log.Info("update started", "version", r.Version, "packages", len(urls))
+	return nil
+}
+
+func download(a relAsset, path string) error {
+	req, err := http.NewRequest("GET", a.URL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "wanscope/"+Version)
+	resp, err := (&http.Client{Timeout: 15 * time.Minute}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GitHub answered %s", resp.Status)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, 64<<20))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	if a.Size > 0 && n != a.Size {
+		return fmt.Errorf("got %d bytes of %d", n, a.Size)
+	}
+	if want, ok := strings.CutPrefix(a.Digest, "sha256:"); ok && !strings.EqualFold(want, hex.EncodeToString(h.Sum(nil))) {
+		return errors.New("the download does not match the release's checksum")
+	}
 	return nil
 }
 

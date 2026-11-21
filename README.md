@@ -91,7 +91,8 @@ Once a day wanscope asks GitHub whether a new release is out (one small API call
 `update_check '0'`). The Settings page shows the installed and latest versions, the release notes and an
 **Update** button, and the Overview says when a new version is out; there is an alert for it too.
 Updating downloads this router's packages from the release (the service, plus the pages and the data
-package when they are installed) and installs them with `opkg` or `apk`, then restarts wanscope: a few
+package when they are installed), checks them against the release's SHA-256 checksums, installs them
+with `opkg` or `apk` and restarts wanscope: a few
 seconds without live data, limits and blocks. Your settings and history stay. It does not run
 `opkg update`. With `update_auto '1'` it installs new releases on its own between 03:00 and 05:00.
 
