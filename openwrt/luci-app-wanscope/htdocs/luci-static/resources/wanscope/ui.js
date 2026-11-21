@@ -33,6 +33,8 @@ var callForget = rpc.declare({ object: 'wanscope', method: 'forget', params: [ '
 var callBlocks = rpc.declare({ object: 'wanscope', method: 'blocks' });
 var callBlockService = rpc.declare({ object: 'wanscope', method: 'block_service', params: [ 'service', 'device', 'block' ] });
 var callSetRule = rpc.declare({ object: 'wanscope', method: 'set_rule', params: [ 'name', 'category', 'domain', 'cidr', 'port' ] });
+var callUpdate = rpc.declare({ object: 'wanscope', method: 'update', params: [ 'check' ] });
+var callUpdateStart = rpc.declare({ object: 'wanscope', method: 'update_start' });
 
 var SVGNS = 'http://www.w3.org/2000/svg';
 
@@ -125,6 +127,7 @@ var CSS = [
 	'.ws-empty{opacity:.65;padding:18px 4px;text-align:center}',
 	'.ws-note{font-size:12px;opacity:.7;line-height:1.5}',
 	'.ws-warnbox{border:1px solid var(--ws-warn);border-radius:8px;padding:8px 12px;margin-bottom:12px}',
+	'.ws-infobox{border:1px solid var(--ws-c1);border-radius:8px;padding:8px 12px;margin-bottom:12px}',
 	'.ws-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}',
 	'.ws-tile{border:1px solid var(--ws-line);border-radius:8px;padding:8px 12px}',
 	'.ws-tile .l{font-size:12px;opacity:.7}',
@@ -284,6 +287,10 @@ return baseclass.extend({
 	blockService: function(service, device, block) { return callBlockService(service, device || '', !!block).then(ok); },
 	// names a service: o = { name, category, and one of domain, cidr, port }
 	setRule: function(o) { return callSetRule(o.name, o.category || 'other', o.domain || '', o.cidr || '', o.port || '').then(ok); },
+	// installed and latest versions (check: ask GitHub now), and the progress of an update
+	update: function(check) { return callUpdate(!!check).then(ok); },
+	// installs the latest release; wanscope restarts on the way
+	updateStart: function() { return callUpdateStart().then(ok); },
 
 	css: function() {
 		if (!document.getElementById('ws-css'))

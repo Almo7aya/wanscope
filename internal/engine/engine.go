@@ -84,10 +84,11 @@ type Engine struct {
 	tunEnds     map[netip.AddrPort]string // WireGuard peer endpoint -> interface
 	tunProcs    map[string]string         // program relaying a tunnel -> interface
 
-	policy *Policy
-	alerts *Alerts
-	blocks *svcBlocks // blocked services' addresses (svcblock.go)
-	buys   *purchases
+	policy  *Policy
+	alerts  *Alerts
+	blocks  *svcBlocks // blocked services' addresses (svcblock.go)
+	buys    *purchases
+	updates *updater // new releases (update.go)
 }
 
 func New(log *slog.Logger, cfg *Config) (*Engine, error) {
@@ -119,6 +120,7 @@ func New(log *slog.Logger, cfg *Config) (*Engine, error) {
 	e.rules.Store(names.NewRules(cfg.Rules, e.loadData()))
 	e.policy = newPolicy(e)
 	e.alerts = newAlerts(e)
+	e.updates = newUpdater(e)
 	e.bus = ubus.NewBus("", log, e.ubusObject())
 	return e, nil
 }
@@ -228,6 +230,7 @@ func (e *Engine) slowLoop(ctx context.Context) {
 			e.refreshTunnels()
 			e.discoverNames(time.Now().Unix())
 			e.checkSystem()
+			e.updates.tick(time.Now().Unix())
 		}
 	}
 }

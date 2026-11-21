@@ -26,6 +26,10 @@ type Config struct {
 	LAN         []string // logical LAN interfaces (empty: the firewall's lan zone)
 	OfflineSecs int64
 
+	UpdateCheck bool   // look for new releases once a day (update.go)
+	UpdateAuto  bool   // and install them at night
+	UpdateRepo  string // owner/name on GitHub
+
 	WANs    map[string]*WANConf
 	Plans   []*PlanConf
 	Devices map[string]*DeviceConf // by lower-case MAC (or "ip:..." key)
@@ -122,6 +126,7 @@ type NotifyConf struct {
 	BurstMinutes  int
 	QuotaAlerts   bool
 	OfflineAlerts bool
+	Updates       bool // a new wanscope release
 }
 
 func atoi(s string, def int) int {
@@ -145,10 +150,10 @@ func LoadConfig() (*Config, error) {
 	}
 	c := &Config{
 		Enabled: true, DataDir: "/usr/share/wanscope", Interval: time.Second, IdlePoll: 5, LiveSeconds: 3600,
-		MinuteDays: 365, HourDays: 731, MemDays: 35, Sniff: true, OfflineSecs: 180,
+		MinuteDays: 365, HourDays: 731, MemDays: 35, Sniff: true, OfflineSecs: 180, UpdateCheck: true, UpdateRepo: defaultRepo,
 		WANs: map[string]*WANConf{}, Devices: map[string]*DeviceConf{},
 		Guest:  GuestConf{Policy: "allow"},
-		Notify: NotifyConf{Method: "none", NewDevice: true, CapPercents: []int{80, 100}, ReportTime: "09:00", BurstMinutes: 10, QuotaAlerts: true},
+		Notify: NotifyConf{Method: "none", NewDevice: true, Updates: true, CapPercents: []int{80, 100}, ReportTime: "09:00", BurstMinutes: 10, QuotaAlerts: true},
 	}
 	if m := f.ByName("main"); m != nil {
 		c.Enabled = m.Bool("enabled", true)
@@ -164,6 +169,9 @@ func LoadConfig() (*Config, error) {
 		c.LAN = m.List("lan")
 		c.OfflineSecs = int64(max(30, atoi(m.Get("offline_timeout", "180"), 180)))
 		c.BlockServices = m.List("block_service")
+		c.UpdateCheck = m.Bool("update_check", true)
+		c.UpdateAuto = m.Bool("update_auto", false)
+		c.UpdateRepo = m.Get("update_repo", defaultRepo)
 	}
 	for _, s := range f.ByType("wan") {
 		name := s.Get("interface", s.Name)
@@ -221,6 +229,7 @@ func LoadConfig() (*Config, error) {
 		c.Notify.NewDevice = n.Bool("new_device", true)
 		c.Notify.QuotaAlerts = n.Bool("quota", true)
 		c.Notify.OfflineAlerts = n.Bool("wan_offline", false)
+		c.Notify.Updates = n.Bool("update", true)
 		if l := n.List("cap_percent"); len(l) > 0 {
 			c.Notify.CapPercents = nil
 			for _, p := range l {

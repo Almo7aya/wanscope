@@ -70,7 +70,7 @@ whatever else uses the same addresses stops too.
 ## Alerts
 
 New devices, data plan thresholds (with the pace and run-out date), device quotas, a device using a lot
-in a short time, uplinks going down, and a daily report. Sent with a Telegram bot or any command (the
+in a short time, uplinks going down, a new wanscope release, and a daily report. Sent with a Telegram bot or any command (the
 message is its last argument), and kept in a log on the Alerts page.
 
 ## History on disk
@@ -85,8 +85,17 @@ message is its last argument), and kept in a log on the Alerts page.
 Files are append-only; a power cut loses at most the minute in progress. A busy home writes about
 0.5-1 MB a day. On routers with little flash, point `data_dir` at a USB disk.
 
-## Install
+## Updates
 
+Once a day wanscope asks GitHub whether a new release is out (one small API call; turn it off with
+`update_check '0'`). The Settings page shows the installed and latest versions, the release notes and an
+**Update** button, and the Overview says when a new version is out; there is an alert for it too.
+Updating downloads this router's packages from the release (the service, plus the pages and the data
+package when they are installed) and installs them with `opkg` or `apk`, then restarts wanscope: a few
+seconds without live data, limits and blocks. Your settings and history stay. It does not run
+`opkg update`. With `update_auto '1'` it installs new releases on its own between 03:00 and 05:00.
+
+## Install
 Packages for every OpenWrt target are on the [releases page](../../releases): `.ipk` for OpenWrt 24.10,
 `.apk` for 25.12 and newer. Find your architecture with `grep DISTRIB_ARCH /etc/openwrt_release`.
 
@@ -129,6 +138,8 @@ config wanscope 'main'
 	option sniff '1'             # name traffic from DNS / TLS / QUIC
 	option minute_days '365'
 	option hour_days '731'
+	option update_check '1'      # look for a new release once a day
+	option update_auto '0'       # and install it at night
 
 config plan 'plan_home'
 	option name 'Home SIM'
@@ -160,6 +171,8 @@ ubus call wanscope plans
 ubus call wanscope flows '{"limit":20}'
 ubus call wanscope history '{"keys":["i:*"],"from":1700000000,"step":3600}'
 ubus call wanscope set_rule '{"name":"Denuvo Anti-Cheat","category":"games","domain":"codefusion.technology"}'
+ubus call wanscope update '{"check":true}'   # installed and latest versions
+ubus call wanscope update_start                # install the latest release
 ```
 
 ## Building

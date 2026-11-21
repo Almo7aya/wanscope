@@ -16,7 +16,7 @@ import (
 
 type Alert struct {
 	T    int64  `json:"t"`
-	Kind string `json:"kind"` // new_device | cap | quota | burst | report | wan_down | test
+	Kind string `json:"kind"` // new_device | cap | quota | burst | report | wan_down | update | test
 	Key  string `json:"key,omitempty"`
 	Text string `json:"text"`
 	Sent string `json:"sent,omitempty"` // delivery result

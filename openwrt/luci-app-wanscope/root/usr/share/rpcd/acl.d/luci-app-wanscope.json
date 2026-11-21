@@ -3,13 +3,13 @@
 		"description": "Grant access to wanscope",
 		"read": {
 			"ubus": {
-				"wanscope": [ "status", "live", "devices", "device", "wans", "flows", "history", "top", "usage", "alerts", "report", "plans", "blocks" ]
+				"wanscope": [ "status", "live", "devices", "device", "wans", "flows", "history", "top", "usage", "alerts", "report", "plans", "blocks", "update" ]
 			},
 			"uci": [ "wanscope" ]
 		},
 		"write": {
 			"ubus": {
-				"wanscope": [ "set_device", "set_wan", "set_guest", "forget", "reload", "notify_test", "set_plan", "topup", "calibrate", "delete_plan", "set_rule", "block_service" ]
+				"wanscope": [ "set_device", "set_wan", "set_guest", "forget", "reload", "notify_test", "set_plan", "topup", "calibrate", "delete_plan", "set_rule", "block_service", "update_start" ]
 			},
 			"uci": [ "wanscope" ]
 		}

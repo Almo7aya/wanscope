@@ -43,6 +43,8 @@ func (e *Engine) ubusObject() *ubus.Object {
 		{Name: "set_rule", Args: []ubus.Arg{arg("name", s), arg("category", s), arg("domain", s), arg("cidr", s), arg("port", s)}, Handler: soft(e.apiSetRule)},
 		{Name: "block_service", Args: []ubus.Arg{arg("service", s), arg("device", s), arg("block", b)}, Handler: soft(e.apiBlockService)},
 		{Name: "blocks", Handler: e.apiBlocks},
+		{Name: "update", Args: []ubus.Arg{arg("check", b)}, Handler: soft(e.apiUpdate)},
+		{Name: "update_start", Handler: soft(e.apiUpdateStart)},
 		{Name: "reload", Handler: func(*ubus.Request) (any, error) { return map[string]any{"ok": true}, e.Reload() }},
 	}}
 }
@@ -173,7 +175,7 @@ func (e *Engine) apiStatus(*ubus.Request) (any, error) {
 		"devices": len(e.Devs.All()), "disk": disk, "warnings": warn, "policy_error": e.policy.Error(),
 		"sniff":  map[string]any{"on": cfg.Sniff, "devs": sdevs, "dns": st.DNS, "tls": st.TLS, "quic": st.QUIC, "packets": pk},
 		"ifaces": ifaces, "notify": cfg.Notify.Method, "guest": cfg.Guest.Policy, "data": e.dataStatus(),
-		"block_services": append([]string{}, cfg.BlockServices...),
+		"block_services": append([]string{}, cfg.BlockServices...), "update": e.updates.brief(),
 	}, nil
 }
 

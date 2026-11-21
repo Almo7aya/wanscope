@@ -88,7 +88,11 @@ return view.extend({
 		var drawWarn = function() {
 			var w = (st.warnings || []).slice();
 			if (st.policy_error) w.push(_('Limits could not be applied: %s').format(st.policy_error));
-			warn.replaceChildren.apply(warn, w.map(function(t) { return E('div', { 'class': 'ws-warnbox' }, [ t ]); }));
+			var nodes = w.map(function(t) { return E('div', { 'class': 'ws-warnbox' }, [ t ]); });
+			if (st.update && st.update.available)
+				nodes.push(E('div', { 'class': 'ws-infobox' }, [ _('wanscope %s is out.').format(st.update.latest), ' ',
+					E('a', { 'href': L.url('admin/network/wanscope/settings') + '#updates' }, [ _('Update it') ]) ]));
+			warn.replaceChildren.apply(warn, nodes);
 		};
 
 		var drawLive = function() {
